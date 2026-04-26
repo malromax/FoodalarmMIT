@@ -40,6 +40,8 @@ DEFAULT_STATE_PATH = Path.home() / ".free_food_alarm_seen.json"
 DEFAULT_ENV_PATH = Path(".env")
 DEFAULT_GPIO_PIN = 16
 DEFAULT_ALARM_SECONDS = 10.0
+DEFAULT_DEDUPE_MINUTES = 60.0
+MAX_ALARM_KEYS = 500
 DEFAULT_WATCH_BUILDINGS = {
     "8",
     "12",
@@ -142,6 +144,14 @@ REVERSED_EW_ROOM_RE = re.compile(r"\b(\d{1,2})([EW])-\d{1,4}\b", re.IGNORECASE)
 LETTER_BUILDING_RE = re.compile(r"\b(?:NE|NW|N|E|W)\d{1,2}\b", re.IGNORECASE)
 MESSAGE_PATH_RE = re.compile(r"/\d{6}\.html$")
 WORD_RE = re.compile(r"[a-z0-9]+")
+SUBJECT_PREFIX_RE = re.compile(
+    r"^(?:\s*(?:re|fw|fwd)\s*:\s*|\s*\[[^\]]+\]\s*)+",
+    re.IGNORECASE,
+)
+NEGATIVE_UPDATE_RE = re.compile(
+    r"\b(?:all\s+gone|no\s+more|none\s+left|food\s+is\s+gone|gone|taken|empty|finished|over)\b",
+    re.IGNORECASE,
+)
 GENERIC_ALIAS_WORDS = {
     "and",
     "at",
@@ -170,6 +180,12 @@ class ArchiveMessage:
 class MessageLink:
     url: str
     subject_hint: str
+
+
+@dataclass
+class PollState:
+    seen_urls: set[str]
+    alarm_keys: dict[str, float]
 
 
 class LinkParser(HTMLParser):
@@ -318,14 +334,28 @@ def has_distinctive_word_match(phrase_words: list[str], candidate_words: list[st
     return False
 
 
-def load_seen(path: Path) -> set[str]:
+def load_state(path: Path) -> PollState:
     if not path.exists():
-        return set()
+        return PollState(seen_urls=set(), alarm_keys={})
     with path.open("r", encoding="utf-8") as fh:
         data = json.load(fh)
-    if not isinstance(data, list):
-        raise ValueError(f"State file must contain a JSON list: {path}")
-    return {str(item) for item in data}
+    if isinstance(data, list):
+        return PollState(seen_urls={str(item) for item in data}, alarm_keys={})
+    if not isinstance(data, dict):
+        raise ValueError(f"State file must contain a JSON list or object: {path}")
+
+    seen_urls = data.get("seen_urls", [])
+    alarm_keys = data.get("alarm_keys", {})
+    if not isinstance(seen_urls, list) or not isinstance(alarm_keys, dict):
+        raise ValueError(f"State file has invalid shape: {path}")
+    return PollState(
+        seen_urls={str(item) for item in seen_urls},
+        alarm_keys={str(key): float(value) for key, value in alarm_keys.items()},
+    )
+
+
+def load_seen(path: Path) -> set[str]:
+    return load_state(path).seen_urls
 
 
 def load_dotenv(path: Path) -> None:
@@ -344,13 +374,21 @@ def load_dotenv(path: Path) -> None:
                 os.environ[key] = value
 
 
-def save_seen(path: Path, seen: Iterable[str]) -> None:
+def save_state(path: Path, state: PollState) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
+    data = {
+        "seen_urls": sorted(state.seen_urls),
+        "alarm_keys": dict(sorted(state.alarm_keys.items())),
+    }
     with tmp_path.open("w", encoding="utf-8") as fh:
-        json.dump(sorted(set(seen)), fh, indent=2)
+        json.dump(data, fh, indent=2)
         fh.write("\n")
     tmp_path.replace(path)
+
+
+def save_seen(path: Path, seen: Iterable[str]) -> None:
+    save_state(path, PollState(seen_urls=set(seen), alarm_keys={}))
 
 
 def login(session: requests.Session, email: str, password: str) -> None:
@@ -422,6 +460,70 @@ def clean_subject(subject: str) -> str:
     subject = re.sub(r"\s+", " ", subject).strip()
     subject = re.sub(r"^\[?Free-foods?\]?\s*", "", subject, flags=re.IGNORECASE)
     return subject
+
+
+def canonical_subject(subject: str) -> str:
+    value = clean_subject(subject)
+    while True:
+        cleaned = SUBJECT_PREFIX_RE.sub("", value).strip()
+        if cleaned == value:
+            break
+        value = cleaned
+    return value
+
+
+def is_negative_update(message: ArchiveMessage) -> bool:
+    return bool(NEGATIVE_UPDATE_RE.search(f"{message.subject}\n{message.text}"))
+
+
+def alarm_key(message: ArchiveMessage, matched_buildings: set[str]) -> str:
+    words = WORD_RE.findall(canonical_subject(message.subject).lower())
+    useful_words = [
+        word
+        for word in words
+        if word
+        not in {
+            "free",
+            "food",
+            "foods",
+            "found",
+            "leftover",
+            "leftovers",
+            "outside",
+            "room",
+            "building",
+            "bldg",
+            "lobby",
+            "floor",
+            "the",
+            "and",
+            "with",
+            "in",
+            "at",
+            "of",
+        }
+    ]
+    subject_part = " ".join(useful_words[:8]) or canonical_subject(message.subject).lower()
+    buildings_part = ",".join(sorted(matched_buildings))
+    return f"{buildings_part}|{subject_part}"
+
+
+def recently_alarmed(state: PollState, key: str, now: float, dedupe_seconds: float) -> bool:
+    last_alarm = state.alarm_keys.get(key)
+    return last_alarm is not None and now - last_alarm < dedupe_seconds
+
+
+def record_alarm_key(state: PollState, key: str, now: float, dedupe_seconds: float) -> None:
+    cutoff = now - max(dedupe_seconds, 60.0)
+    state.alarm_keys = {
+        stored_key: ts
+        for stored_key, ts in state.alarm_keys.items()
+        if ts >= cutoff
+    }
+    state.alarm_keys[key] = now
+    if len(state.alarm_keys) > MAX_ALARM_KEYS:
+        newest = sorted(state.alarm_keys.items(), key=lambda item: item[1], reverse=True)
+        state.alarm_keys = dict(newest[:MAX_ALARM_KEYS])
 
 
 def strip_mail_headers(message_text: str) -> str:
@@ -503,30 +605,40 @@ def poll_once(
     session: requests.Session,
     archive_url: str,
     watch_buildings: set[str],
-    seen: set[str],
+    state: PollState,
     process_existing: bool,
     args: argparse.Namespace,
-) -> tuple[set[str], int]:
+) -> tuple[PollState, int]:
     links = fetch_message_links(session, archive_url)
-    new_links = [link for link in links if link.url not in seen]
+    new_links = [link for link in links if link.url not in state.seen_urls]
 
-    if not seen and not process_existing:
-        seen.update(link.url for link in links)
-        return seen, 0
+    if not state.seen_urls and not process_existing:
+        state.seen_urls.update(link.url for link in links)
+        return state, 0
 
     alarms = 0
+    dedupe_seconds = args.dedupe_minutes * 60.0
     for link in new_links:
         message = fetch_message(session, link)
         found = extract_buildings(f"{message.subject}\n{message.text}")
         matched = found & watch_buildings
         if matched:
-            alarm(message, matched, args)
-            alarms += 1
+            if args.suppress_gone_updates and is_negative_update(message):
+                print(f"suppressed gone-update subject={message.subject} url={message.url}", flush=True)
+            else:
+                key = alarm_key(message, matched)
+                now = time.time()
+                if dedupe_seconds > 0 and recently_alarmed(state, key, now, dedupe_seconds):
+                    print(f"suppressed duplicate key={key} subject={message.subject} url={message.url}", flush=True)
+                else:
+                    alarm(message, matched, args)
+                    record_alarm_key(state, key, now, dedupe_seconds)
+                    alarms += 1
         else:
             print(f"seen no-match subject={message.subject} url={message.url}", flush=True)
-        seen.add(link.url)
+        state.seen_urls.add(link.url)
 
-    return seen, alarms
+    return state, alarms
 
 
 def parse_buildings(raw: str) -> set[str]:
@@ -564,6 +676,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Print GPIO action instead of touching hardware",
     )
     parser.add_argument(
+        "--dedupe-minutes",
+        type=float,
+        default=DEFAULT_DEDUPE_MINUTES,
+        help="Suppress duplicate alarms for the same building/subject event within this many minutes",
+    )
+    parser.add_argument(
+        "--suppress-gone-updates",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Suppress posts that say the food is gone/no more/taken",
+    )
+    parser.add_argument(
         "--process-existing",
         action="store_true",
         help="Process already-present archive messages on first run",
@@ -581,7 +705,7 @@ def main(argv: list[str]) -> int:
         print("Set FREE_FOODS_EMAIL and FREE_FOODS_PASSWORD in the environment.", file=sys.stderr)
         return 2
 
-    seen = load_seen(args.state)
+    state = load_state(args.state)
     session = requests.Session()
     session.headers.update({"User-Agent": "free-food-alarm/0.1"})
 
@@ -594,16 +718,19 @@ def main(argv: list[str]) -> int:
     while True:
         try:
             archive_url = args.archive_url or month_date_url()
-            seen, alarms = poll_once(
+            state, alarms = poll_once(
                 session=session,
                 archive_url=archive_url,
                 watch_buildings=args.buildings,
-                seen=seen,
+                state=state,
                 process_existing=args.process_existing,
                 args=args,
             )
-            save_seen(args.state, seen)
-            print(f"poll complete alarms={alarms} seen={len(seen)}", flush=True)
+            save_state(args.state, state)
+            print(
+                f"poll complete alarms={alarms} seen={len(state.seen_urls)} alarm_keys={len(state.alarm_keys)}",
+                flush=True,
+            )
         except Exception as exc:
             print(f"poll error: {exc}", file=sys.stderr, flush=True)
 

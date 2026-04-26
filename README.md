@@ -30,6 +30,13 @@ On each matching post, GPIO 16 is turned on for 10 seconds. Use that GPIO to
 drive the MOSFET gate through the appropriate resistor/driver circuit. Do not
 power a motor directly from a GPIO pin.
 
+Duplicate replies to the same food/location event are suppressed for 60 minutes
+by default, and "gone/no more/taken" updates do not trigger the GPIO.
+
+```bash
+python3 free_food_alarm.py --dedupe-minutes 60 --interval 30
+```
+
 For a hardware-free test:
 
 ```bash
