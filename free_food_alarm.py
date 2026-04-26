@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import calendar
 import datetime as dt
+import difflib
 import json
 import os
 import re
@@ -140,6 +141,7 @@ ROOM_CODE_RE = re.compile(
 REVERSED_EW_ROOM_RE = re.compile(r"\b(\d{1,2})([EW])-\d{1,4}\b", re.IGNORECASE)
 LETTER_BUILDING_RE = re.compile(r"\b(?:NE|NW|N|E|W)\d{1,2}\b", re.IGNORECASE)
 MESSAGE_PATH_RE = re.compile(r"/\d{6}\.html$")
+WORD_RE = re.compile(r"[a-z0-9]+")
 
 
 @dataclass(frozen=True)
@@ -246,6 +248,7 @@ def normalize_building(raw: str) -> str:
 
 def extract_buildings(text: str) -> set[str]:
     lowered = text.lower()
+    normalized_words = WORD_RE.findall(lowered)
     buildings = set()
     buildings.update(normalize_building(match.group(1)) for match in EXPLICIT_BUILDING_RE.finditer(text))
     buildings.update(normalize_building(match.group(1)) for match in ROOM_CODE_RE.finditer(text))
@@ -257,7 +260,30 @@ def extract_buildings(text: str) -> set[str]:
     for alias, building in BUILDING_ALIASES.items():
         if alias in lowered:
             buildings.add(building)
+        elif building in DEFAULT_WATCH_BUILDINGS and fuzzy_phrase_in_words(alias, normalized_words):
+            buildings.add(building)
     return buildings
+
+
+def fuzzy_phrase_in_words(phrase: str, words: list[str]) -> bool:
+    phrase_words = WORD_RE.findall(phrase.lower())
+    if not phrase_words:
+        return False
+
+    phrase_text = " ".join(phrase_words)
+    if len(phrase_text) < 5:
+        return False
+
+    threshold = 0.84 if len(phrase_text) <= 14 else 0.88
+    phrase_len = len(phrase_words)
+    for size in {phrase_len - 1, phrase_len, phrase_len + 1}:
+        if size <= 0:
+            continue
+        for start in range(0, len(words) - size + 1):
+            candidate = " ".join(words[start : start + size])
+            if difflib.SequenceMatcher(None, phrase_text, candidate).ratio() >= threshold:
+                return True
+    return False
 
 
 def load_seen(path: Path) -> set[str]:
