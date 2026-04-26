@@ -32,6 +32,8 @@ power a motor directly from a GPIO pin.
 
 Duplicate replies to the same food/location event are suppressed for 60 minutes
 by default, and "gone/no more/taken" updates do not trigger the GPIO.
+If the Mailman session expires, the poller automatically logs in again and
+retries the poll.
 
 ```bash
 python3 free_food_alarm.py --dedupe-minutes 60 --interval 30

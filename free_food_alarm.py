@@ -182,10 +182,20 @@ class MessageLink:
     subject_hint: str
 
 
+@dataclass(frozen=True)
+class Credentials:
+    email: str
+    password: str
+
+
 @dataclass
 class PollState:
     seen_urls: set[str]
     alarm_keys: dict[str, float]
+
+
+class AuthenticationExpired(RuntimeError):
+    pass
 
 
 class LinkParser(HTMLParser):
@@ -392,6 +402,7 @@ def save_seen(path: Path, seen: Iterable[str]) -> None:
 
 
 def login(session: requests.Session, email: str, password: str) -> None:
+    session.cookies.clear()
     response = session.get(ARCHIVE_ROOT, timeout=20)
     response.raise_for_status()
 
@@ -423,9 +434,18 @@ def login_succeeded(response: requests.Response) -> bool:
     )
 
 
+def ensure_authenticated(response: requests.Response) -> None:
+    text = response.text.lower()
+    if response.status_code in {401, 403}:
+        raise AuthenticationExpired(f"Mailman authentication expired with HTTP {response.status_code}")
+    if "private archive authentication" in text or "authentication failed" in text:
+        raise AuthenticationExpired("Mailman returned the private archive login page")
+
+
 def fetch_message_links(session: requests.Session, url: str) -> list[MessageLink]:
     response = session.get(url, timeout=20)
     response.raise_for_status()
+    ensure_authenticated(response)
     parser = LinkParser()
     parser.feed(response.text)
 
@@ -442,6 +462,7 @@ def fetch_message(session: requests.Session, link: MessageLink) -> ArchiveMessag
     url = link.url
     response = session.get(url, timeout=20)
     response.raise_for_status()
+    ensure_authenticated(response)
     parser = TextParser()
     parser.feed(response.text)
     text = parser.message_body()
@@ -641,6 +662,37 @@ def poll_once(
     return state, alarms
 
 
+def poll_once_with_relogin(
+    session: requests.Session,
+    credentials: Credentials,
+    archive_url: str,
+    watch_buildings: set[str],
+    state: PollState,
+    process_existing: bool,
+    args: argparse.Namespace,
+) -> tuple[PollState, int]:
+    try:
+        return poll_once(
+            session=session,
+            archive_url=archive_url,
+            watch_buildings=watch_buildings,
+            state=state,
+            process_existing=process_existing,
+            args=args,
+        )
+    except AuthenticationExpired as exc:
+        print(f"authentication expired, re-logging in: {exc}", file=sys.stderr, flush=True)
+        login(session, credentials.email, credentials.password)
+        return poll_once(
+            session=session,
+            archive_url=archive_url,
+            watch_buildings=watch_buildings,
+            state=state,
+            process_existing=process_existing,
+            args=args,
+        )
+
+
 def parse_buildings(raw: str) -> set[str]:
     buildings = {item.strip().upper() for item in raw.split(",") if item.strip()}
     if not buildings:
@@ -704,12 +756,13 @@ def main(argv: list[str]) -> int:
     if not email or not password:
         print("Set FREE_FOODS_EMAIL and FREE_FOODS_PASSWORD in the environment.", file=sys.stderr)
         return 2
+    credentials = Credentials(email=email, password=password)
 
     state = load_state(args.state)
     session = requests.Session()
     session.headers.update({"User-Agent": "free-food-alarm/0.1"})
 
-    login(session, email, password)
+    login(session, credentials.email, credentials.password)
     if args.archive_url:
         print(f"polling {args.archive_url} for buildings={','.join(sorted(args.buildings))}", flush=True)
     else:
@@ -718,8 +771,9 @@ def main(argv: list[str]) -> int:
     while True:
         try:
             archive_url = args.archive_url or month_date_url()
-            state, alarms = poll_once(
+            state, alarms = poll_once_with_relogin(
                 session=session,
+                credentials=credentials,
                 archive_url=archive_url,
                 watch_buildings=args.buildings,
                 state=state,
