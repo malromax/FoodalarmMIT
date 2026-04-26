@@ -11,15 +11,18 @@ export FREE_FOODS_EMAIL="bot@example.com"
 export FREE_FOODS_PASSWORD="mailman-password"
 ```
 
-On the Raspberry Pi:
+On the Raspberry Pi, use a virtual environment:
 
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
 python3 -m pip install requests gpiozero
 ```
 
 ## Run
 
 ```bash
+. .venv/bin/activate
 python3 free_food_alarm.py --interval 30
 ```
 

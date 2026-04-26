@@ -36,6 +36,7 @@ except ImportError as exc:  # pragma: no cover - startup dependency guard
 ARCHIVE_ROOT = "https://mailman.mit.edu/mailman/private/free-foods/"
 LISTINFO_URL = "https://mailman.mit.edu/mailman/listinfo/free-foods"
 DEFAULT_STATE_PATH = Path.home() / ".free_food_alarm_seen.json"
+DEFAULT_ENV_PATH = Path(".env")
 DEFAULT_GPIO_PIN = 16
 DEFAULT_ALARM_SECONDS = 10.0
 DEFAULT_WATCH_BUILDINGS = {
@@ -222,6 +223,22 @@ def load_seen(path: Path) -> set[str]:
     if not isinstance(data, list):
         raise ValueError(f"State file must contain a JSON list: {path}")
     return {str(item) for item in data}
+
+
+def load_dotenv(path: Path) -> None:
+    if not path.exists():
+        return
+
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("\"'")
+            if key and key not in os.environ:
+                os.environ[key] = value
 
 
 def save_seen(path: Path, seen: Iterable[str]) -> None:
@@ -412,6 +429,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--interval", type=int, default=30, help="Polling interval in seconds")
+    parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_PATH, help="Path to .env credentials file")
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE_PATH, help="Seen-state JSON path")
     parser.add_argument("--archive-url", default=None, help="Override archive date.html URL")
     parser.add_argument("--gpio-pin", type=int, default=DEFAULT_GPIO_PIN, help="BCM GPIO pin for MOSFET gate")
@@ -437,6 +455,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    load_dotenv(args.env_file)
     email = os.environ.get("FREE_FOODS_EMAIL")
     password = os.environ.get("FREE_FOODS_PASSWORD")
     if not email or not password:
