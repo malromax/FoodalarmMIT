@@ -39,9 +39,7 @@ LISTINFO_URL = "https://mailman.mit.edu/mailman/listinfo/free-foods"
 DEFAULT_STATE_PATH = Path.home() / ".free_food_alarm_seen.json"
 DEFAULT_ENV_PATH = Path(".env")
 DEFAULT_GPIO_PIN = 16
-DEFAULT_ALARM_SECONDS = 20.0
-DEFAULT_PULSE_ON_SECONDS = 0.5
-DEFAULT_PULSE_OFF_SECONDS = 0.5
+DEFAULT_ALARM_SECONDS = 0.5
 DEFAULT_DEDUPE_MINUTES = 60.0
 MAX_ALARM_KEYS = 500
 DEFAULT_WATCH_BUILDINGS = {
@@ -641,11 +639,7 @@ def alarm(message: ArchiveMessage, matched_buildings: set[str], args: argparse.N
 
 def trigger_gpio(pin: int, seconds: float, dry_run: bool) -> None:
     if dry_run:
-        print(
-            f"GPIO dry-run pulse pin={pin} seconds={seconds:g} "
-            f"on={DEFAULT_PULSE_ON_SECONDS:g} off={DEFAULT_PULSE_OFF_SECONDS:g}",
-            flush=True,
-        )
+        print(f"GPIO dry-run pin={pin} seconds={seconds:g}", flush=True)
         return
 
     try:
@@ -660,14 +654,8 @@ def trigger_gpio(pin: int, seconds: float, dry_run: bool) -> None:
 
     device = DigitalOutputDevice(pin, active_high=True, initial_value=False)
     try:
-        pulse_until = time.monotonic() + seconds
-        while time.monotonic() < pulse_until:
-            device.on()
-            time.sleep(min(DEFAULT_PULSE_ON_SECONDS, max(0.0, pulse_until - time.monotonic())))
-            device.off()
-            remaining = pulse_until - time.monotonic()
-            if remaining > 0:
-                time.sleep(min(DEFAULT_PULSE_OFF_SECONDS, remaining))
+        device.on()
+        time.sleep(seconds)
     finally:
         device.off()
         device.close()
@@ -771,7 +759,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--alarm-seconds",
         type=float,
         default=DEFAULT_ALARM_SECONDS,
-        help="Seconds to pulse the GPIO pin for each alarm",
+        help="Seconds to keep the GPIO pin on for each alarm",
     )
     parser.add_argument(
         "--dry-run-alarm",
