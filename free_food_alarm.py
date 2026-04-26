@@ -142,6 +142,21 @@ REVERSED_EW_ROOM_RE = re.compile(r"\b(\d{1,2})([EW])-\d{1,4}\b", re.IGNORECASE)
 LETTER_BUILDING_RE = re.compile(r"\b(?:NE|NW|N|E|W)\d{1,2}\b", re.IGNORECASE)
 MESSAGE_PATH_RE = re.compile(r"/\d{6}\.html$")
 WORD_RE = re.compile(r"[a-z0-9]+")
+GENERIC_ALIAS_WORDS = {
+    "and",
+    "at",
+    "building",
+    "buildings",
+    "center",
+    "college",
+    "gym",
+    "institute",
+    "laboratories",
+    "laboratory",
+    "library",
+    "memorial",
+    "mit",
+}
 
 
 @dataclass(frozen=True)
@@ -280,8 +295,25 @@ def fuzzy_phrase_in_words(phrase: str, words: list[str]) -> bool:
         if size <= 0:
             continue
         for start in range(0, len(words) - size + 1):
-            candidate = " ".join(words[start : start + size])
+            candidate_words = words[start : start + size]
+            if not has_distinctive_word_match(phrase_words, candidate_words):
+                continue
+            candidate = " ".join(candidate_words)
             if difflib.SequenceMatcher(None, phrase_text, candidate).ratio() >= threshold:
+                return True
+    return False
+
+
+def has_distinctive_word_match(phrase_words: list[str], candidate_words: list[str]) -> bool:
+    distinctive_words = [
+        word for word in phrase_words if len(word) >= 4 and word not in GENERIC_ALIAS_WORDS
+    ]
+    if not distinctive_words:
+        return True
+
+    for phrase_word in distinctive_words:
+        for candidate_word in candidate_words:
+            if difflib.SequenceMatcher(None, phrase_word, candidate_word).ratio() >= 0.82:
                 return True
     return False
 
@@ -394,11 +426,27 @@ def clean_subject(subject: str) -> str:
 
 def strip_mail_headers(message_text: str) -> str:
     if "\n\n" not in message_text:
-        return message_text
+        return strip_quoted_text(message_text)
     headers, body = message_text.split("\n\n", 1)
     if re.search(r"(?im)^(from|date|subject):\s+", headers):
-        return body
-    return message_text
+        return strip_quoted_text(body)
+    return strip_quoted_text(message_text)
+
+
+def strip_quoted_text(message_text: str) -> str:
+    kept_lines: list[str] = []
+    for line in message_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(">"):
+            continue
+        if re.match(r"(?i)^on .+ wrote:$", stripped):
+            break
+        if re.match(r"(?i)^from:\s", stripped):
+            break
+        if "free-foods mailing list" in stripped.lower():
+            break
+        kept_lines.append(line)
+    return "\n".join(kept_lines)
 
 
 def dedupe_preserve_order(items: Iterable[str]) -> list[str]:
