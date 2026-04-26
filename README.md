@@ -39,6 +39,9 @@ python3 free_food_alarm.py --dry-run-alarm --interval 30
 By default, the first run marks existing messages as seen and only alarms on
 future posts. To test against already-present archive messages:
 
+When `--archive-url` is not set, the poller recalculates the current monthly
+archive on each poll, so it moves from April to May automatically while running.
+
 ```bash
 python3 free_food_alarm.py --process-existing --once
 ```

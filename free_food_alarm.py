@@ -462,16 +462,19 @@ def main(argv: list[str]) -> int:
         print("Set FREE_FOODS_EMAIL and FREE_FOODS_PASSWORD in the environment.", file=sys.stderr)
         return 2
 
-    archive_url = args.archive_url or month_date_url()
     seen = load_seen(args.state)
     session = requests.Session()
     session.headers.update({"User-Agent": "free-food-alarm/0.1"})
 
     login(session, email, password)
-    print(f"polling {archive_url} for buildings={','.join(sorted(args.buildings))}", flush=True)
+    if args.archive_url:
+        print(f"polling {args.archive_url} for buildings={','.join(sorted(args.buildings))}", flush=True)
+    else:
+        print(f"polling current monthly archive for buildings={','.join(sorted(args.buildings))}", flush=True)
 
     while True:
         try:
+            archive_url = args.archive_url or month_date_url()
             seen, alarms = poll_once(
                 session=session,
                 archive_url=archive_url,
