@@ -1,0 +1,15 @@
+[Unit]
+Description=MIT Free Food Alarm
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lima
+WorkingDirectory=/home/lima/Free_food_alarm
+ExecStart=/home/lima/Free_food_alarm/.venv/bin/python /home/lima/Free_food_alarm/free_food_alarm.py --interval 30
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

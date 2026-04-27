@@ -78,3 +78,29 @@ python3 free_food_alarm.py --buildings 32,36,W20,E14
 
 The seen-message state is stored at `~/.free_food_alarm_seen.json` unless
 overridden with `--state`.
+
+## USB / Manual Pi Install
+
+Copy this whole folder to the Pi, for example to:
+
+```text
+/home/lima/Free_food_alarm
+```
+
+Then run:
+
+```bash
+cd ~/Free_food_alarm
+chmod +x setup_pi.sh
+./setup_pi.sh
+```
+
+The setup script creates the virtual environment, installs dependencies, writes
+the systemd service using the current folder path, enables it, and starts it.
+
+Check it with:
+
+```bash
+systemctl status free-food-alarm
+journalctl -u free-food-alarm -f
+```
